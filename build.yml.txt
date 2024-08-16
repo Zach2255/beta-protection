@@ -1,0 +1,98 @@
+name: Beta Protection CI Build
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Use Node.js 14.x
+      uses: actions/setup-node@v1
+      with:
+        node-version: 14.x
+    - run: npm ci
+    - run: npm run build
+    - uses: actions/upload-artifact@v2
+      with:
+        name: unpacked-extension
+        path: dist/
+    - uses: actions/upload-artifact@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        name: bp-packed
+        path: artifacts/*.zip
+  crx:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - uses: actions/checkout@v2
+    - name: Download build artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: unpacked-extension
+        path: extension
+    - name: Re-create key file
+      env: 
+        GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      run: gpg --quiet --batch --yes --decrypt --passphrase="$GPG_PASSPHRASE" --output key.pem key.pem.gpg
+    - name: Create CRX
+      run: npx crx pack ./extension/ -o beta-protection.crx -p ./key.pem
+    - uses: actions/upload-artifact@v2
+      with:
+        name: packed-crx
+        path: ./*.crx
+    - uses: actions/upload-artifact@v2
+      with:
+        name: install-scripts
+        path: build/*
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    needs: [build, crx]
+    steps:
+    - name: Set output
+      id: vars
+      run: echo ::set-output name=tag::${GITHUB_REF#refs/*/}
+    - name: Download build artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: bp-packed
+        path: extension
+    - name: Download build artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: packed-crx
+        path: crx
+    - name: Download build artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: install-scripts
+        path: scripts
+    - name: Build Scripts
+      uses: thedoctor0/zip-release@master
+      with:
+        type: 'zip'
+        directory: './scripts'
+        filename: 'whitelist-scripts.zip'
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with: 
+        body: |
+          See [the installation docs](https://silveredgold.github.io/beta-protection/#/guide/installation) for full instructions on installing Beta Protection.
+
+          This is an extremely early preview build, and I cannot guarantee that you won't experience bugs.
+        files: |
+          ./extension/*.zip
+          ./crx/*.crx
+          ./scripts/*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
